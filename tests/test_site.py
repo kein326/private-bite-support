@@ -1457,13 +1457,23 @@ class ImportPageContractTest(unittest.TestCase):
         ja = read(PAGES["ja_import"])
         en = read(PAGES["en_import"])
         _assert_contains_all(
-            ja, ["1.0〜5.0", "0.1刻み", "1〜5の整数", "YYYY-MM-DD"], "rules-ja"
+            ja,
+            ["1.0〜5.0", "0.1刻み", "1〜5の整数", "YYYY-MM-DD", "YYYY/M/D", "2026/7/16"],
+            "rules-ja",
         )
         _assert_contains_all(
             en,
-            ["1.0 to 5.0", "steps of 0.1", "1 to 5", "YYYY-MM-DD"],
+            [
+                "1.0 to 5.0",
+                "steps of 0.1",
+                "1 to 5",
+                "YYYY-MM-DD",
+                "YYYY/M/D",
+                "2026/7/16",
+            ],
             "rules-en",
         )
+        self.assertNotIn("YYYY-MM-DD format only", en)
 
     def test_import_page_currency_default_and_no_country_inference(self):
         ja = read(PAGES["ja_import"])

@@ -43,7 +43,7 @@
         </thead>
         <tbody>
           <tr><td>Visit Group</td><td>Optional</td><td>A shared value used to group multiple dishes from the same meal. If blank, each row is treated as its own separate visit.</td><td>001</td></tr>
-          <tr><td>Visit Date</td><td>Required</td><td>The date you actually visited. YYYY-MM-DD format only (for example, 2026-07-16), and must be a real calendar date.</td><td>2026-07-16</td></tr>
+          <tr><td>Visit Date</td><td>Required</td><td>The date you actually visited. Use year-month-day order in YYYY-MM-DD or YYYY/M/D format, for example 2026-07-16 or 2026/7/16. The date must be a real calendar date.</td><td>2026-07-16</td></tr>
           <tr><td>Shop Name</td><td>Required</td><td>The name of the restaurant.</td><td>Unagi no Mitani</td></tr>
           <tr><td>Dish Name</td><td>Required</td><td>The name of the dish you ordered.</td><td>Hitsumabushi Set</td></tr>
           <tr><td>Visit Type</td><td>Optional</td><td>Dine-in, Takeout, or Delivery (English or Japanese; case-insensitive).</td><td>Dine-in</td></tr>
@@ -62,7 +62,7 @@
         </tbody>
       </table>
     </div>
-    <p>The taste rating uses 1.0 to 5.0 in steps of 0.1. The cost, atmosphere, and service ratings are whole numbers from 1 to 5. The visit date uses YYYY-MM-DD format.</p>
+    <p>The taste rating uses 1.0 to 5.0 in steps of 0.1. The cost, atmosphere, and service ratings are whole numbers from 1 to 5. The visit date must use year-month-day order in YYYY-MM-DD or YYYY/M/D format, for example 2026-07-16 or 2026/7/16. The date must be a real calendar date.</p>
     <p class="meta">The file size limit is 10MB, and the data row limit is 10,000 rows. The file must use UTF-8 encoding (a UTF-8 BOM is fine) with comma delimiters; both LF and CRLF line endings are supported.</p>
   </section>
   <section>
@@ -80,7 +80,7 @@
   <section>
     <h2>Common errors and fixes</h2>
     <ul>
-      <li><strong>Wrong visit date format:</strong> Use YYYY-MM-DD (for example, 2026-07-16) with a real calendar date.</li>
+      <li><strong>Wrong visit date format:</strong> Use year-month-day order in YYYY-MM-DD or YYYY/M/D format, for example 2026-07-16 or 2026/7/16. The date must be a real calendar date.</li>
       <li><strong>Unsupported currency code:</strong> Use one of the app's 20 supported currencies, or leave it blank.</li>
       <li><strong>Mismatched values within a visit group:</strong> Every value except the dish name, price, taste rating, and category must match across rows in the same visit group.</li>
       <li><strong>Missing required values:</strong> Every row needs a visit date, shop name, and dish name.</li>
