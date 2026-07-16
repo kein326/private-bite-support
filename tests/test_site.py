@@ -80,20 +80,46 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+_CSS_COMMENT_PATTERN = re.compile(r"/\*.*?\*/", re.DOTALL)
+_HEX6_VALUE_PATTERN = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _strip_css_comments(css: str) -> str:
+    """CSS テキストから `/* ... */` コメントを除去する（複数行コメントにも対応）。"""
+    return _CSS_COMMENT_PATTERN.sub("", css)
+
+
 def extract_css_var(css: str, var_name: str) -> str:
-    """CSS テキストから `--var-name: #rrggbb;` 形式の16進色値を抽出する。
+    """CSS テキストから `--var-name: <値>;` 宣言を抽出し、値が
+    `#rrggbb` 形式の6桁16進色であることを確認して返す。
     このサイトは --primary・--surface・--background を :root で一度だけ
     定義する契約のため、定義が0件（見つからない）または2件以上（レスポンシブ
     な上書きなどで重複定義されている）の場合は、どちらの値かを黙って選ばずに
-    AssertionError を送出する（テスト内での利用を想定）。"""
-    pattern = re.compile(rf"{re.escape(var_name)}\s*:\s*(#[0-9a-fA-F]{{6}})\s*;")
-    matches = pattern.findall(css)
+    AssertionError を送出する（テスト内での利用を想定）。
+
+    宣言件数のカウントは、値の表記形式（6桁HEX・3桁短縮HEX・rgb()関数記法等）
+    に関係なく `--var-name: <値>;` というプロパティ宣言そのものを数える。
+    かつて宣言件数のカウント自体を6桁HEXへ一致した宣言だけに限定していたため、
+    値の表記が異なる重複定義（例: 6桁HEXと3桁HEXが混在）を実質2件あるのに
+    1件しか検出できず見逃していた。CSSコメント内の宣言はカウントに含めない。
+
+    宣言がちょうど1件であっても、その値がコントラスト計算に必要な6桁HEX値
+    として解析できない場合（rgb()表記・3桁短縮HEXのみ等）も AssertionError
+    を送出する。"""
+    css_no_comments = _strip_css_comments(css)
+    decl_pattern = re.compile(rf"{re.escape(var_name)}\s*:\s*([^;]+);")
+    matches = decl_pattern.findall(css_no_comments)
     if len(matches) != 1:
         raise AssertionError(
             f"{var_name} は css 内でちょうど1回定義されている必要がありますが、"
             f"{len(matches)}件見つかりました"
         )
-    return matches[0]
+    value = matches[0].strip()
+    if not _HEX6_VALUE_PATTERN.match(value):
+        raise AssertionError(
+            f"{var_name} の値 {value!r} は6桁HEX値（#rrggbb）として解析できません"
+        )
+    return value
 
 
 def relative_luminance(hex_color: str) -> float:
@@ -362,32 +388,64 @@ def is_valid_support_mailto(href: str) -> bool:
     return True
 
 
-_URL_FUNCTION_PATTERN = re.compile(
-    r"""url\(\s*(?:"(?P<dq>[^"]*)"|'(?P<sq>[^']*)'|(?P<uq>[^'")]*))\s*\)""",
-    re.IGNORECASE,
-)
+_URL_START_PATTERN = re.compile(r"url\(", re.IGNORECASE)
 _IMPORT_OR_FONT_FACE_PATTERN = re.compile(r"@import|@font-face", re.IGNORECASE)
 _EXTERNAL_URL_PREFIXES = ("http:", "https:", "//")
 
 
+def _iter_url_function_values(css: str):
+    """css内のすべての url(...) 呼び出しについて、引用符・前後の空白を除いた
+    値を出現順に yield する。url( の大文字小文字、引用符の有無（シングル/
+    ダブル/なし）、括弧内側の空白のバリエーションを問わず検出する。
+
+    正規表現の文字クラスで引用符を除外する方式（例: [^'")]）では、
+    シングルクォートで囲んだ値の内部にバックスラッシュでエスケープされた
+    同じ種類の引用符（例: url('...o\\'neil.png')）が含まれると、その
+    エスケープされた引用符の時点で値が終端したと誤認識してしまう。この
+    ため、正規表現ではなく文字を1つずつ読む走査に置き換え、引用符内では
+    バックスラッシュの次の1文字を終端候補として扱わない（エスケープの
+    バックスラッシュ自体は取り除き、エスケープされた文字だけを値へ含める）。
+    """
+    n = len(css)
+    pos = 0
+    while True:
+        start_match = _URL_START_PATTERN.search(css, pos)
+        if start_match is None:
+            return
+        i = start_match.end()
+        while i < n and css[i].isspace():
+            i += 1
+        if i < n and css[i] in ("'", '"'):
+            quote = css[i]
+            i += 1
+            value_chars = []
+            while i < n:
+                ch = css[i]
+                if ch == "\\" and i + 1 < n:
+                    value_chars.append(css[i + 1])
+                    i += 2
+                    continue
+                if ch == quote:
+                    i += 1
+                    break
+                value_chars.append(ch)
+                i += 1
+            value = "".join(value_chars).strip()
+        else:
+            close = css.find(")", i)
+            if close == -1:
+                close = n
+            value = css[i:close].strip()
+            i = close
+        yield value
+        pos = i
+
+
 def extract_external_css_urls(css: str) -> list:
     """CSS全文から url(...) の中身（引用符・前後の空白を除いた値）をすべて抽出し、
-    http: / https: / // のいずれかで始まる外部参照だけを一覧として返す。
-    url( の大文字小文字、引用符の有無（シングル/ダブル/なし）、括弧内側の空白の
-    バリエーションを問わずマッチするよう re.IGNORECASE を使った正規表現で解析する
-    （部分一致の "url(http" では検出できない引用符付き・大文字表記に対応するため）。
-    ダブルクォート・シングルクォート・引用符なしを別々の選択肢として扱うことで、
-    値の内部に反対側の引用符（例: url("...o'neil.png")）が含まれていても、
-    開始引用符と同じ引用符が再び現れるまでを正しく値として取得する。"""
+    http: / https: / // のいずれかで始まる外部参照だけを一覧として返す。"""
     external = []
-    for match in _URL_FUNCTION_PATTERN.finditer(css):
-        if match.group("dq") is not None:
-            value = match.group("dq")
-        elif match.group("sq") is not None:
-            value = match.group("sq")
-        else:
-            value = match.group("uq")
-        value = value.strip()
+    for value in _iter_url_function_values(css):
         if value.lower().startswith(_EXTERNAL_URL_PREFIXES):
             external.append(value)
     return external
@@ -407,6 +465,39 @@ _ANDROID_FAQ_FORBIDDEN_CONTRADICTIONS = {
         "guaranteed to restore",
     ],
 }
+
+# 復元保証の言い換え（自然な文で書き換えられた場合）を正規化して拒否するための
+# 「保護フレーズ」と「禁止パターン」。前回（acc1c44）の完全一致語句リストは
+# 大文字小文字を区別する限定的な一致だけを拒否しており、
+# 「将来のAndroid版でも確実に復元できることをお約束します」のような自然な
+# 言い換えや、"Future Android restores are guaranteed." のような文構造の異なる
+# 英文をすり抜けてしまっていた。
+#
+# 手順:
+#   1. 既存の正しい回答に必要な正しい否定表現（ja: "保証されません" /
+#      en: "not guaranteed"）を先に除去（マスク）する。
+#   2. 残った文字列に、肯定的な保証表現（ja: 保証・約束・必ず復元・確実に復元 /
+#      en: guaranteed という語そのもの）が含まれていれば拒否する。
+# 英語は大文字小文字を問わず検査するため、比較前に小文字化する。
+_JA_GUARANTEE_PROTECTED_PATTERN = re.compile(r"保証されません")
+_JA_GUARANTEE_FORBIDDEN_PATTERN = re.compile(r"保証|約束|必ず復元|確実に復元")
+_EN_GUARANTEE_PROTECTED_PATTERN = re.compile(r"not guaranteed")
+_EN_GUARANTEE_FORBIDDEN_PATTERN = re.compile(r"guaranteed")
+
+
+def _contains_guarantee_paraphrase_contradiction(dd_text: str, lang: str) -> bool:
+    """dd_text に、復元を保証する内容の言い換え（自然文・大文字小文字の
+    バリエーションを含む）が含まれているかを判定する。既存の正しい否定表現
+    （「保証されません」/ "not guaranteed"）はあらかじめマスクしてから
+    残りを検査するため、正しい回答自体を誤検出しない。"""
+    if lang == "ja":
+        masked = _JA_GUARANTEE_PROTECTED_PATTERN.sub("", dd_text)
+        return _JA_GUARANTEE_FORBIDDEN_PATTERN.search(masked) is not None
+    elif lang == "en":
+        masked = _EN_GUARANTEE_PROTECTED_PATTERN.sub("", dd_text.lower())
+        return _EN_GUARANTEE_FORBIDDEN_PATTERN.search(masked) is not None
+    else:
+        raise ValueError(f"unsupported lang: {lang!r}")
 
 
 def assert_android_faq_answer_complete(dd_text: str, lang: str) -> None:
@@ -452,6 +543,13 @@ def assert_android_faq_answer_complete(dd_text: str, lang: str) -> None:
         _ANDROID_FAQ_FORBIDDEN_CONTRADICTIONS[lang],
         f"android-faq-contradiction-{lang}",
     )
+    if _contains_guarantee_paraphrase_contradiction(dd_text, lang):
+        raise AssertionError(
+            f"[android-faq-contradiction-paraphrase-{lang}] a guarantee-style "
+            f"paraphrase (e.g. 保証/約束/確実に復元 or a case-insensitive "
+            f"'guaranteed') was found outside the protected negative phrase in: "
+            f"{dd_text!r}"
+        )
 
 
 def assert_iphone_migration_faq_answer_complete(dd_text: str, lang: str) -> None:
@@ -631,6 +729,36 @@ class SiteContractTest(unittest.TestCase):
         with self.assertRaises(AssertionError):
             assert_android_faq_answer_complete(en_contradicted, "en")
 
+    def test_android_faq_rejects_appended_guarantee_paraphrases(self):
+        """前回（acc1c44）の完全一致語句リストは、大小文字を区別する限定的な
+        完全一致だけを拒否しており、自然な言い換え（「お約束します」等）や
+        文構造の異なる英文（"are guaranteed" 等）、大文字混じりの英文
+        （"It Is Guaranteed To Restore."）をすり抜けていた。正しい既存回答の
+        末尾へ、それぞれの合成入力を追記して AssertionError が送出されることを
+        確認する。"""
+        ja_pairs = extract_dt_dd_pairs(read(PAGES["ja_support"]))
+        ja_answer = _answer_for_question(ja_pairs, "Androidへ機種変更")
+        ja_paraphrased = (
+            ja_answer + "将来のAndroid版でも確実に復元できることをお約束します。"
+        )
+        with self.assertRaises(AssertionError):
+            assert_android_faq_answer_complete(ja_paraphrased, "ja")
+
+        en_pairs = extract_dt_dd_pairs(read(PAGES["en_support"]))
+        en_answer = _answer_for_question(en_pairs, "switching to Android")
+
+        en_paraphrased_different_structure = (
+            en_answer + " Future Android restores are guaranteed."
+        )
+        with self.assertRaises(AssertionError):
+            assert_android_faq_answer_complete(
+                en_paraphrased_different_structure, "en"
+            )
+
+        en_paraphrased_mixed_case = en_answer + " It Is Guaranteed To Restore."
+        with self.assertRaises(AssertionError):
+            assert_android_faq_answer_complete(en_paraphrased_mixed_case, "en")
+
     def test_iphone_migration_faq_requires_records_and_photos_mention(self):
         """機種変更FAQの回答が「記録と写真」（英語版は records and photos）を
         具体的に言及していない場合は、他の必須語句をすべて満たしていても
@@ -661,18 +789,44 @@ class SiteContractTest(unittest.TestCase):
             self.assertIn(value, en)
 
     def test_primary_color_meets_wcag_aa_contrast(self):
-        """--primary は --surface（白背景）・--background（ミント背景）の双方で
-        通常文字4.5:1以上のWCAGコントラスト比を実値計算で満たすこと"""
+        """--primary はリテラルの白（#ffffff）・--surface（白背景）・
+        --background（ミント背景）のいずれに対しても通常文字4.5:1以上の
+        WCAGコントラスト比を実値計算で満たすこと。--surface と --background
+        だけを検査すると、--surface がたまたま白であることに暗黙に依存して
+        しまうため、リテラルの白に対する比率も独立して検査する。"""
         css = (ROOT / "styles.css").read_text(encoding="utf-8")
         primary = extract_css_var(css, "--primary")
         surface = extract_css_var(css, "--surface")
         background = extract_css_var(css, "--background")
 
+        ratio_vs_white = contrast_ratio(primary, "#ffffff")
+        ratio_vs_surface = contrast_ratio(primary, surface)
+        ratio_vs_background = contrast_ratio(primary, background)
+
+        self.assertGreaterEqual(ratio_vs_white, 4.5)
+        self.assertGreaterEqual(ratio_vs_surface, 4.5)
+        self.assertGreaterEqual(ratio_vs_background, 4.5)
+
+    def test_literal_white_contrast_check_is_independent_of_surface_value(self):
+        """--surface がたまたま白であることに暗黙に依存していないことを、
+        --surface/--background に対する比率が高くなるよう仕組んだ合成CSSで
+        固定する。--primary 自体をリテラルの白と同じ色にすると、
+        --surface・--background に対する比率は高い値になるが、リテラルの白
+        （#ffffff）に対する比率は 1.0:1 になり、これを独立して検出できる
+        必要がある。"""
+        css = "--primary: #ffffff;\n--surface: #000000;\n--background: #111111;\n"
+        primary = extract_css_var(css, "--primary")
+        surface = extract_css_var(css, "--surface")
+        background = extract_css_var(css, "--background")
+
+        ratio_vs_white = contrast_ratio(primary, "#ffffff")
         ratio_vs_surface = contrast_ratio(primary, surface)
         ratio_vs_background = contrast_ratio(primary, background)
 
         self.assertGreaterEqual(ratio_vs_surface, 4.5)
         self.assertGreaterEqual(ratio_vs_background, 4.5)
+        self.assertLess(ratio_vs_white, 4.5)
+        self.assertAlmostEqual(ratio_vs_white, 1.0, places=6)
 
     def test_contrast_ratio_below_threshold_is_detected(self):
         """薄い色同士の組み合わせは4.5:1を下回ると判定されること（否定テスト）。
@@ -705,6 +859,53 @@ class SiteContractTest(unittest.TestCase):
             extract_css_var(css, "--primary")
         self.assertEqual(extract_css_var(css, "--surface"), "#ffffff")
         self.assertEqual(extract_css_var(css, "--background"), "#edf7f4")
+
+    def test_extract_css_var_counts_declarations_regardless_of_value_format(self):
+        """宣言件数のカウントは値の表記形式（6桁HEX・3桁短縮HEX・rgb()関数記法）
+        に依存しないこと。以前は6桁HEXへ一致した宣言だけを数えていたため、
+        値の表記が異なる重複定義（3桁HEXやrgb()との混在）を実質2件あるのに
+        1件しか検出できず見逃していた。--primary・--surface・--background の
+        いずれでも同じ契約（宣言1件・6桁HEX解析可能）を検査する。"""
+        css_with_shorthand_hex_override = (
+            ":root { --primary: #0f766e; }\n"
+            "@media (max-width: 1px) { :root { --primary: #ccc; } }"
+        )
+        css_with_rgb_override = (
+            ":root { --primary: #0f766e; }\n"
+            "@media (max-width: 1px) { :root { --primary: rgb(204 204 204); } }"
+        )
+        for var_name in ("--primary", "--surface", "--background"):
+            with self.subTest(var_name=var_name, case="shorthand-hex-override"):
+                css = css_with_shorthand_hex_override.replace("--primary", var_name)
+                with self.assertRaises(AssertionError):
+                    extract_css_var(css, var_name)
+            with self.subTest(var_name=var_name, case="rgb-override"):
+                css = css_with_rgb_override.replace("--primary", var_name)
+                with self.assertRaises(AssertionError):
+                    extract_css_var(css, var_name)
+
+    def test_extract_css_var_rejects_single_declaration_with_unparseable_hex_value(
+        self,
+    ):
+        """宣言がちょうど1件であっても、値がコントラスト計算に必要な6桁HEX値
+        として解析できない場合（rgb()表記・3桁短縮HEXのみ）は AssertionError
+        を送出すること。--primary・--surface・--background いずれでも同じ。"""
+        for var_name in ("--primary", "--surface", "--background"):
+            with self.subTest(var_name=var_name, case="rgb-only"):
+                css = f":root {{ {var_name}: rgb(15, 118, 110); }}"
+                with self.assertRaises(AssertionError):
+                    extract_css_var(css, var_name)
+            with self.subTest(var_name=var_name, case="shorthand-hex-only"):
+                css = f":root {{ {var_name}: #0ab; }}"
+                with self.assertRaises(AssertionError):
+                    extract_css_var(css, var_name)
+
+    def test_extract_css_var_ignores_declarations_inside_css_comments(self):
+        """CSSコメント（/* ... */）内の宣言は件数にも値の解析対象にも含めない
+        こと。コメントアウトされた重複定義があっても、有効な宣言が1件なら
+        正しく値を取得できる。"""
+        css = "/* --primary: #ff0000; */\n:root { --primary: #0f766e; }"
+        self.assertEqual(extract_css_var(css, "--primary"), "#0f766e")
 
     def test_frankfurter_connection_info_disclosure(self):
         """Frankfurter API段落にIPアドレスなどの一般的な接続情報処理の開示が含まれること"""
@@ -962,6 +1163,16 @@ class SiteContractTest(unittest.TestCase):
                 extract_external_css_urls(css),
                 ['https://cdn.example.com/a"b.png'],
             )
+
+    def test_extract_external_css_urls_handles_backslash_escaped_same_quote(self):
+        """シングルクォートで囲んだ値の内部に、バックスラッシュでエスケープ
+        された同じ種類の引用符（\\'）が含まれていても、そこで値が終端したと
+        誤認識せず、正しく1件の外部URLとして検出できること（空配列にならない
+        こと）。正規表現の文字クラスによる引用符除外方式では、エスケープされた
+        引用符の時点でマッチが打ち切られてしまう。"""
+        css = "background-image: url('https://cdn.example.com/o\\'neil.png');"
+        urls = extract_external_css_urls(css)
+        self.assertEqual(urls, ["https://cdn.example.com/o'neil.png"])
 
 
 class CsvTemplateContractTest(unittest.TestCase):
