@@ -1,5 +1,6 @@
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 import re
 import unittest
 
@@ -151,6 +152,35 @@ def _assert_contains_all(text, phrases, label):
 def _assert_contains_none(text, phrases, label):
     for phrase in phrases:
         assert phrase not in text, f"[{label}] forbidden phrase {phrase!r} found in: {text!r}"
+
+
+def is_valid_support_mailto(href: str) -> bool:
+    """mailto: URI (RFC 6068) を urllib.parse で分解し、次をすべて満たす場合だけ
+    True を返す。startswith の前方一致検査では、
+    mailto:privatebite.support@icloud.com,other@example.com?subject=x のような
+    複数宛先を誤って許可してしまうため、厳密な分解検査に置き換える。
+
+    - scheme が "mailto" である。
+    - 宛先（urlsplit の path 部分をカンマ区切りで分割したもの）が1件だけであり、
+      その1件が SUPPORT_EMAIL と完全一致する。
+    - クエリ文字列のキーが "subject" だけであり、"cc"・"bcc"・その他未知のキーを
+      含まない。
+    """
+    parts = urlsplit(href)
+    if parts.scheme != "mailto":
+        return False
+
+    recipients = parts.path.split(",")
+    if len(recipients) != 1:
+        return False
+    if recipients[0] != SUPPORT_EMAIL:
+        return False
+
+    query_keys = set(parse_qs(parts.query, keep_blank_values=True).keys())
+    if query_keys != {"subject"}:
+        return False
+
+    return True
 
 
 def assert_android_faq_answer_complete(dd_text: str, lang: str) -> None:
@@ -394,8 +424,11 @@ class SiteContractTest(unittest.TestCase):
                 self.assertEqual(_footer_link_href(links), "../")
 
     def test_mailto_links_target_support_address(self):
-        """全ページの mailto リンクが privatebite.support@icloud.com を指すこと
-        （本文全体の正規表現検査ではなく、<a href="mailto:..."> の href 値そのものを検査する）"""
+        """全ページの mailto リンクが、宛先1件が privatebite.support@icloud.com と
+        完全一致し、cc/bcc を持たず、subject 以外のクエリキーを持たないこと。
+        前方一致（startswith）ではなく urllib.parse による厳密検査を行うため、
+        mailto:privatebite.support@icloud.com,other@example.com?subject=x のような
+        複数宛先を誤って許可しない。"""
         for name, path in PAGES.items():
             links = extract_links(read(path))
             mailto_links = [link for link in links if link["href"].startswith("mailto:")]
@@ -403,9 +436,29 @@ class SiteContractTest(unittest.TestCase):
                 self.assertTrue(mailto_links, "no mailto link found")
                 for link in mailto_links:
                     self.assertTrue(
-                        link["href"].startswith(f"mailto:{SUPPORT_EMAIL}"),
+                        is_valid_support_mailto(link["href"]),
                         link["href"],
                     )
+
+    def test_mailto_validation_rejects_multiple_recipients(self):
+        """宛先がカンマ区切りで複数指定された mailto は拒否されること"""
+        self.assertFalse(
+            is_valid_support_mailto(
+                f"mailto:{SUPPORT_EMAIL},other@example.com?subject=x"
+            )
+        )
+
+    def test_mailto_validation_rejects_cc(self):
+        """cc パラメータを持つ mailto は拒否されること"""
+        self.assertFalse(
+            is_valid_support_mailto(f"mailto:{SUPPORT_EMAIL}?cc=other@example.com")
+        )
+
+    def test_mailto_validation_rejects_bcc(self):
+        """bcc パラメータを持つ mailto は拒否されること"""
+        self.assertFalse(
+            is_valid_support_mailto(f"mailto:{SUPPORT_EMAIL}?bcc=other@example.com")
+        )
 
     def test_stylesheet_has_no_forbidden_patterns(self):
         """styles.css に @import・外部URL参照・外部フォント・外部CDN・スクリプトが
