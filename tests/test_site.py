@@ -690,6 +690,97 @@ class SiteContractTest(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertNotIn(value, css)
 
+    def test_top_pages_link_to_csv_import_page(self):
+        """日英トップページのFAQから、それぞれの言語のCSV取込ページへの直接リンクがあること。"""
+        for name in ("ja_support", "en_support"):
+            with self.subTest(name=name):
+                page_path = PAGES[name]
+                links = extract_links(read(page_path))
+                hrefs = {link["href"] for link in links}
+                self.assertIn("import/", hrefs)
+                resolved = _resolve_relative_link(page_path, "import/")
+                self.assertTrue(resolved.is_file(), resolved)
+
+    def test_faq_distinguishes_backup_restore_and_csv_import(self):
+        """『バックアップ復元』と『CSVから記録を追加』を別目的として説明していること。"""
+        ja_pairs = extract_dt_dd_pairs(read(PAGES["ja_support"]))
+        ja_answer = _answer_for_question(ja_pairs, "バックアップ復元とCSV取込")
+        _assert_contains_all(
+            ja_answer,
+            ["完全バックアップから元の状態へ戻す", "既存の記録へ追加", "CSVから記録を追加する"],
+            "backup-vs-csv-ja",
+        )
+
+        en_pairs = extract_dt_dd_pairs(read(PAGES["en_support"]))
+        en_answer = _answer_for_question(
+            en_pairs, "restoring a backup and importing a CSV"
+        )
+        _assert_contains_all(
+            en_answer,
+            [
+                "original state",
+                "complete backup",
+                "add rows",
+                "existing records",
+                "Add records from a CSV file",
+            ],
+            "backup-vs-csv-en",
+        )
+
+    def test_privacy_pages_disclose_csv_import_without_duplicating_frankfurter_details(
+        self,
+    ):
+        """プライバシーページにCSV取込の端末内解析・外貨換算時の送信を追記しつつ、
+        既存のFrankfurter API説明（送信内容の詳細）を重複して書き下していないこと。"""
+        ja = read(PAGES["ja_privacy"])
+        en = read(PAGES["en_privacy"])
+        _assert_contains_all(
+            ja,
+            ["端末内で解析", "外部へ送信されることはありません", "外部サービス", "Frankfurter API"],
+            "csv-privacy-ja",
+        )
+        _assert_contains_all(
+            en,
+            [
+                "parsed entirely on your device",
+                "not sent anywhere",
+                "External services",
+                "Frankfurter API",
+            ],
+            "csv-privacy-en",
+        )
+        # 送信内容のフル説明（日付・換算元通貨コード・換算先通貨コード）は
+        # 「3. 外部サービス」に1回だけ記載し、CSV取込の追記では重複させない。
+        self.assertEqual(
+            ja.count("換算元通貨コード、換算先通貨コードを送信します"), 1
+        )
+        self.assertEqual(
+            en.count(
+                "source currency code, and target currency code to obtain an "
+                "exchange rate"
+            ),
+            1,
+        )
+
+    def test_top_to_import_to_privacy_to_top_navigation_loop(self):
+        """日英それぞれで トップ→CSV取込→プライバシー→トップ の導線が
+        すべて実ファイルへ解決し、最終的にトップページへ戻ってくること。"""
+        chains = {
+            "ja": PAGES["ja_support"],
+            "en": PAGES["en_support"],
+        }
+        for lang, start_page in chains.items():
+            with self.subTest(lang=lang):
+                import_path = _resolve_relative_link(start_page, "import/")
+                self.assertTrue(import_path.is_file(), import_path)
+
+                privacy_path = _resolve_relative_link(import_path, "../privacy/")
+                self.assertTrue(privacy_path.is_file(), privacy_path)
+
+                top_path = _resolve_relative_link(privacy_path, "../")
+                self.assertTrue(top_path.is_file(), top_path)
+                self.assertEqual(top_path, start_page.resolve())
+
     def test_extract_external_css_urls_detects_quoted_and_spaced_forms(self):
         """url(...) の引用符付き・大文字・前後空白のバリエーションを、部分一致
         (url(http) では検出できないケースも含めて正規表現解析で検出できること"""
