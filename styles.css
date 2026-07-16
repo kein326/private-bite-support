@@ -56,7 +56,15 @@ a:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
 dt { font-weight: 700; margin-top: 16px; }
 dd { margin: 4px 0 0; }
 
+.table-scroll { overflow-x: auto; margin: 16px 0; }
+table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: .92rem; }
+th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+th { background: var(--background); color: var(--text); font-weight: 700; white-space: nowrap; }
+td { color: var(--text); }
+
 @media (max-width: 520px) {
   main { width: min(100% - 20px, 760px); padding: 20px 0 40px; }
   header, section, footer { padding: 20px; border-radius: 14px; }
+  table { min-width: 560px; font-size: .85rem; }
+  th, td { padding: 6px 8px; }
 }

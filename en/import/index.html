@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="How to bulk-add records to Private Bite from a CSV file">
+  <title>Add Records from a CSV File | Private Bite</title>
+  <link rel="stylesheet" href="../../styles.css">
+</head>
+<body>
+<main>
+  <nav class="language" aria-label="Language"><a href="../../import/" lang="ja">日本語</a></nav>
+  <header>
+    <h1>Add records from a CSV file</h1>
+    <p class="lede">Fill in the CSV template to bulk-add multiple visits and dishes to Private Bite at once.</p>
+  </header>
+  <section>
+    <h2>1. Save the template</h2>
+    <p>Download the official CSV template and open it in Excel or a spreadsheet app. Do not change the header row; row 2 contains a sample record.</p>
+    <p><a class="contact" href="../../downloads/private-bite-import-v1-en.csv" download>Download the English CSV template</a></p>
+    <p class="meta">If you prefer Japanese column headers, you can also download the <a href="../../downloads/private-bite-import-v1-ja.csv" download>Japanese CSV template</a>.</p>
+  </section>
+  <section>
+    <h2>2. Fill it in with Excel or Google Sheets</h2>
+    <p>Each row represents one dish. If you are recording multiple dishes from the same meal, see "Using visit groups" below. Do not change the header row's column names or order.</p>
+  </section>
+  <section>
+    <h2>3. Save as CSV</h2>
+    <p>When you are done, save the file as CSV (comma-separated). Choose UTF-8 encoding (a UTF-8 BOM is fine) and keep the comma as the delimiter.</p>
+  </section>
+  <section>
+    <h2>4. Review before importing into Private Bite</h2>
+    <p>In Private Bite, open Settings and choose "Add records from CSV," then select your file. On the confirmation screen, review any rows that need attention, possible duplicates, and whether to convert currencies before completing the import.</p>
+    <p>When you complete the import, the reviewed rows are added to your existing records. It does not update, replace, or merge any existing records or dishes.</p>
+  </section>
+  <section>
+    <h2>Columns and rules</h2>
+    <p>Only three columns are required: visit date, shop name, and dish name. Even when rows share a visit group, each row still needs its own value for these three columns. Every other column is optional and can be left blank.</p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Column</th><th>Required</th><th>Description</th><th>Example</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Visit Group</td><td>Optional</td><td>A shared value used to group multiple dishes from the same meal. If blank, each row is treated as its own separate visit.</td><td>001</td></tr>
+          <tr><td>Visit Date</td><td>Required</td><td>The date you actually visited. YYYY-MM-DD format only (for example, 2026-07-16), and must be a real calendar date.</td><td>2026-07-16</td></tr>
+          <tr><td>Shop Name</td><td>Required</td><td>The name of the restaurant.</td><td>Unagi no Mitani</td></tr>
+          <tr><td>Dish Name</td><td>Required</td><td>The name of the dish you ordered.</td><td>Hitsumabushi Set</td></tr>
+          <tr><td>Visit Type</td><td>Optional</td><td>Dine-in, Takeout, or Delivery (English or Japanese; case-insensitive).</td><td>Dine-in</td></tr>
+          <tr><td>City</td><td>Optional</td><td>The city you visited.</td><td>Okayama</td></tr>
+          <tr><td>Country Code</td><td>Optional</td><td>An ISO 3166-1 alpha-2 two-letter code. Lowercase is automatically uppercased.</td><td>JP</td></tr>
+          <tr><td>Shop Address</td><td>Optional</td><td>As much of the address as you know.</td><td>Okayama, Okayama Pref...</td></tr>
+          <tr><td>Price</td><td>Optional</td><td>The amount you paid, as a number.</td><td>4200</td></tr>
+          <tr><td>Currency Code</td><td>Optional</td><td>An ISO 4217 three-letter code. Only the app's 20 supported currencies are accepted. If a price is entered and this is blank, the app's default currency is used.</td><td>JPY</td></tr>
+          <tr><td>Taste Rating</td><td>Optional</td><td>1.0 to 5.0 in steps of 0.1.</td><td>4.8</td></tr>
+          <tr><td>Category</td><td>Optional</td><td>The dish's category. Matches an existing category name if one exists.</td><td>Eel</td></tr>
+          <tr><td>Cost Rating</td><td>Optional</td><td>A whole number from 1 to 5.</td><td>4</td></tr>
+          <tr><td>Atmosphere Rating</td><td>Optional</td><td>A whole number from 1 to 5.</td><td>5</td></tr>
+          <tr><td>Service Rating</td><td>Optional</td><td>A whole number from 1 to 5.</td><td>4</td></tr>
+          <tr><td>Memo</td><td>Optional</td><td>Free-form text. Wrap it in double quotes if it contains a comma.</td><td>Crispy skin</td></tr>
+          <tr><td>Want to Revisit</td><td>Optional</td><td>Yes/No, true/false, or 1/0 (Japanese "はい"/"いいえ" is also accepted).</td><td>TRUE</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The taste rating uses 1.0 to 5.0 in steps of 0.1. The cost, atmosphere, and service ratings are whole numbers from 1 to 5. The visit date uses YYYY-MM-DD format.</p>
+    <p class="meta">The file size limit is 10MB, and the data row limit is 10,000 rows. The file must use UTF-8 encoding (a UTF-8 BOM is fine) with comma delimiters; both LF and CRLF line endings are supported.</p>
+  </section>
+  <section>
+    <h2>Using visit groups</h2>
+    <p>Use "Visit Group" only when recording multiple dishes from the same meal. Rows that share the same value (for example, 001) are grouped into a single visit; only the dish name, price, taste rating, and category are treated as per-dish values. Every other value (visit date, shop name, visit type, city, country code, shop address, currency code, the three ratings, memo, and revisit flag) must match across all rows in the same visit group. If they don't match, the entire visit group is excluded from the import.</p>
+    <p>If you leave "Visit Group" blank, each row is imported as its own separate visit.</p>
+    <p class="meta">Example: entering "001" on three rows with dish names "Eel Rice Bowl," "Liver Soup," and "Pickles" records them as three dishes from a single visit.</p>
+  </section>
+  <section>
+    <h2>Duplicates, restaurants, categories, and currency</h2>
+    <p>Rows with a date, restaurant name, and dish name close to an existing record are treated as possible duplicates and are excluded by default. You can review them on the confirmation screen and choose to include them if needed.</p>
+    <p>A restaurant name that matches an existing one is treated as the same restaurant; a different spelling creates a new restaurant. A category name that matches an existing category is linked to it; unmatched category names can be resolved on the confirmation screen.</p>
+    <p>If you enter a price and leave the currency code blank, the app's default currency is used. The country code is never used to guess the currency. A currency code the app doesn't support is flagged as an error on the confirmation screen.</p>
+  </section>
+  <section>
+    <h2>Common errors and fixes</h2>
+    <ul>
+      <li><strong>Wrong visit date format:</strong> Use YYYY-MM-DD (for example, 2026-07-16) with a real calendar date.</li>
+      <li><strong>Unsupported currency code:</strong> Use one of the app's 20 supported currencies, or leave it blank.</li>
+      <li><strong>Mismatched values within a visit group:</strong> Every value except the dish name, price, taste rating, and category must match across rows in the same visit group.</li>
+      <li><strong>Missing required values:</strong> Every row needs a visit date, shop name, and dish name.</li>
+      <li><strong>File too large or too many rows:</strong> Split the file so it stays under 10MB and 10,000 data rows.</li>
+      <li><strong>Garbled characters:</strong> Save the file with UTF-8 encoding (a UTF-8 BOM is fine).</li>
+    </ul>
+  </section>
+  <section>
+    <h2>Privacy</h2>
+    <p>The CSV file is parsed entirely on your device and is not sent anywhere. Only if you choose currency conversion during import are the visit date and currency codes sent to the Frankfurter API to look up an exchange rate. Restaurant names, dish names, notes, and the price itself are never sent. See the full <a href="../privacy/">Privacy Policy</a> for details.</p>
+    <p>If you have questions about importing, contact <a class="contact" href="mailto:privatebite.support@icloud.com?subject=Private%20Bite%20CSV%20Import">privatebite.support@icloud.com</a>.</p>
+  </section>
+  <footer>
+    <a href="../">Back to Support</a>
+    <p class="meta">Private Bite</p>
+  </footer>
+</main>
+</body>
+</html>

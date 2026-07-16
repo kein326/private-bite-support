@@ -13,6 +13,8 @@ PAGES = {
     "ja_privacy": ROOT / "privacy" / "index.html",
     "en_support": ROOT / "en" / "index.html",
     "en_privacy": ROOT / "en" / "privacy" / "index.html",
+    "ja_import": ROOT / "import" / "index.html",
+    "en_import": ROOT / "en" / "import" / "index.html",
 }
 
 CSV_TEMPLATES = {
@@ -233,6 +235,76 @@ def _answer_for_question(pairs, question_substring):
         f"expected exactly one <dt> containing {question_substring!r}, found {len(matches)}"
     )
     return matches[0]
+
+
+_TITLE_PATTERN = re.compile(r"<title>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+
+
+def extract_title(html: str) -> str:
+    """<title>...</title> の中身を1つ取り出す。見つからなければ AssertionError。"""
+    match = _TITLE_PATTERN.search(html)
+    if not match:
+        raise AssertionError("no <title> found")
+    return match.group(1).strip()
+
+
+_H2_PATTERN = re.compile(r"<h2>(.*?)</h2>", re.DOTALL)
+
+
+def extract_h2_texts(html: str) -> list:
+    """ページ内の <h2>...</h2> テキストを出現順のリストで返す（見出し構成の検査用）。"""
+    return [re.sub(r"\s+", " ", raw).strip() for raw in _H2_PATTERN.findall(html)]
+
+
+class _TableRowParser(HTMLParser):
+    """<table> 内の <tr> ごとに <td>/<th> のテキストをリストとして抽出するヘルパー。
+    <code>や<strong>などのネストしたインラインタグを含むセルでも、そのセル内の
+    テキストをまとめて1つの文字列として扱う（_DlPairParser と同じ標準ライブラリ方式）。"""
+
+    def __init__(self):
+        super().__init__()
+        self.rows = []
+        self._current_row = None
+        self._cell_depth = 0
+        self._cell_text = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self._current_row = []
+        elif tag in ("td", "th"):
+            self._cell_depth += 1
+            if self._cell_depth == 1:
+                self._cell_text = []
+
+    def handle_endtag(self, tag):
+        if tag in ("td", "th"):
+            if self._cell_depth > 0:
+                self._cell_depth -= 1
+                if self._cell_depth == 0 and self._current_row is not None:
+                    self._current_row.append("".join(self._cell_text).strip())
+        elif tag == "tr" and self._current_row is not None:
+            self.rows.append(self._current_row)
+            self._current_row = None
+
+    def handle_data(self, data):
+        if self._cell_depth > 0:
+            self._cell_text.append(data)
+
+
+def extract_table_rows(html: str) -> list:
+    """html.parser.HTMLParser のみを使い、<table>内の各<tr>を
+    セルテキストのリストとして抽出する（ヘッダー行含む出現順）。"""
+    parser = _TableRowParser()
+    parser.feed(html)
+    return parser.rows
+
+
+def _resolve_relative_link(page_path: Path, href: str) -> Path:
+    """ページからの相対リンクを実ファイルパスへ解決する。ディレクトリを指す
+    （末尾が "/"）場合は index.html を補う。"""
+    if href.endswith("/"):
+        return (page_path.parent / href / "index.html").resolve()
+    return (page_path.parent / href).resolve()
 
 
 def _assert_contains_all(text, phrases, label):
@@ -540,6 +612,8 @@ class SiteContractTest(unittest.TestCase):
             "en_support": "../",
             "ja_privacy": "../en/privacy/",
             "en_privacy": "../../privacy/",
+            "ja_import": "../en/import/",
+            "en_import": "../../import/",
         }
         for name, expected_href in cases.items():
             with self.subTest(name=name):
@@ -773,6 +847,235 @@ class CsvTemplateContractTest(unittest.TestCase):
         revisit_index = EN_HEADERS.index("revisit_flag")
         self.assertEqual(sample_ja[revisit_index], "はい")
         self.assertEqual(sample_en[revisit_index], "TRUE")
+
+
+class ImportPageContractTest(unittest.TestCase):
+    """CSVから記録を追加する説明ページ（日英）の契約テスト。"""
+
+    EXPECTED_H2_JA = [
+        "1. テンプレートを保存",
+        "2. ExcelまたはGoogleスプレッドシートで入力",
+        "3. CSVとして保存",
+        "4. Private Biteで取込前確認",
+        "列と入力規則",
+        "訪問グループの使い方",
+        "重複・店舗・カテゴリ・外貨",
+        "よくあるエラーと直し方",
+        "プライバシー",
+    ]
+
+    EXPECTED_H2_EN = [
+        "1. Save the template",
+        "2. Fill it in with Excel or Google Sheets",
+        "3. Save as CSV",
+        "4. Review before importing into Private Bite",
+        "Columns and rules",
+        "Using visit groups",
+        "Duplicates, restaurants, categories, and currency",
+        "Common errors and fixes",
+        "Privacy",
+    ]
+
+    def test_import_pages_exist(self):
+        self.assertTrue(PAGES["ja_import"].is_file())
+        self.assertTrue(PAGES["en_import"].is_file())
+
+    def test_import_page_lang_title_h1(self):
+        ja_html = read(PAGES["ja_import"])
+        en_html = read(PAGES["en_import"])
+        self.assertIn('lang="ja"', ja_html)
+        self.assertIn('lang="en"', en_html)
+        self.assertIn("Private Bite", extract_title(ja_html))
+        self.assertIn("CSV", extract_title(ja_html))
+        self.assertIn("Private Bite", extract_title(en_html))
+        self.assertIn("CSV", extract_title(en_html))
+        self.assertIn("<h1>CSVから記録を追加する</h1>", ja_html)
+        self.assertIn("<h1>Add records from a CSV file</h1>", en_html)
+
+    def test_import_page_heading_order(self):
+        self.assertEqual(
+            extract_h2_texts(read(PAGES["ja_import"])), self.EXPECTED_H2_JA
+        )
+        self.assertEqual(
+            extract_h2_texts(read(PAGES["en_import"])), self.EXPECTED_H2_EN
+        )
+
+    def test_import_page_has_exactly_one_language_link(self):
+        # test_language_links_are_mutual (SiteContractTest) covers the actual
+        # href assertions; this test just confirms both pages carry exactly
+        # one nav.language link (helper raises if the count is ever not 1).
+        for name in ("ja_import", "en_import"):
+            with self.subTest(name=name):
+                links = extract_links(read(PAGES[name]))
+                _language_link_href(links)
+
+    def test_import_page_links_to_support_home_and_privacy(self):
+        for name, expected_home, expected_privacy in (
+            ("ja_import", "../", "../privacy/"),
+            ("en_import", "../", "../privacy/"),
+        ):
+            with self.subTest(name=name):
+                links = extract_links(read(PAGES[name]))
+                hrefs = {link["href"] for link in links}
+                self.assertIn(expected_home, hrefs)
+                self.assertIn(expected_privacy, hrefs)
+
+    def test_import_page_csv_download_links(self):
+        ja_html = read(PAGES["ja_import"])
+        en_html = read(PAGES["en_import"])
+        self.assertIn('href="../downloads/private-bite-import-v1-ja.csv"', ja_html)
+        self.assertIn('href="../downloads/private-bite-import-v1-en.csv"', ja_html)
+        self.assertIn(
+            'href="../../downloads/private-bite-import-v1-en.csv"', en_html
+        )
+        self.assertIn(
+            'href="../../downloads/private-bite-import-v1-ja.csv"', en_html
+        )
+
+    def test_import_page_relative_links_resolve_to_existing_files(self):
+        for name in ("ja_import", "en_import"):
+            path = PAGES[name]
+            html = read(path)
+            links = extract_links(html)
+            for link in links:
+                href = link["href"]
+                if href.startswith(("mailto:", "http://", "https://")):
+                    continue
+                with self.subTest(name=name, href=href):
+                    resolved = _resolve_relative_link(path, href)
+                    self.assertTrue(resolved.is_file(), resolved)
+
+    def test_import_page_stylesheet_link_resolves(self):
+        for name, expected in (
+            ("ja_import", '<link rel="stylesheet" href="../styles.css">'),
+            ("en_import", '<link rel="stylesheet" href="../../styles.css">'),
+        ):
+            with self.subTest(name=name):
+                self.assertIn(expected, read(PAGES[name]))
+
+    def test_import_page_table_covers_all_columns_matching_csv_headers(self):
+        cases = {
+            "ja_import": JA_HEADER_LABELS,
+            "en_import": EN_HEADER_LABELS,
+        }
+        for name, labels in cases.items():
+            with self.subTest(name=name):
+                rows = extract_table_rows(read(PAGES[name]))
+                self.assertGreaterEqual(len(rows), 18, "header row + 17 data rows")
+                data_rows = rows[1:18]
+                self.assertEqual([row[0] for row in data_rows], labels)
+
+    def test_import_page_table_marks_required_columns(self):
+        ja_rows = extract_table_rows(read(PAGES["ja_import"]))[1:18]
+        en_rows = extract_table_rows(read(PAGES["en_import"]))[1:18]
+        for i, row in enumerate(ja_rows):
+            expected = "必須" if i in REQUIRED_COLUMN_INDICES else "任意"
+            with self.subTest(lang="ja", index=i):
+                self.assertEqual(row[1], expected)
+        for i, row in enumerate(en_rows):
+            expected = "Required" if i in REQUIRED_COLUMN_INDICES else "Optional"
+            with self.subTest(lang="en", index=i):
+                self.assertEqual(row[1], expected)
+
+    def test_import_page_table_is_scroll_wrapped(self):
+        for name in ("ja_import", "en_import"):
+            with self.subTest(name=name):
+                self.assertRegex(
+                    read(PAGES[name]), r'<div class="table-scroll">\s*<table'
+                )
+
+    def test_stylesheet_defines_table_scroll_overflow(self):
+        css = read(ROOT / "styles.css")
+        match = re.search(r"\.table-scroll\s*\{([^}]*)\}", css)
+        self.assertIsNotNone(match, "no .table-scroll rule found")
+        self.assertIn("overflow-x", match.group(1))
+        self.assertIn("auto", match.group(1))
+
+    def test_import_page_required_three_columns_are_explicit(self):
+        ja = read(PAGES["ja_import"])
+        en = read(PAGES["en_import"])
+        _assert_contains_all(ja, ["3つだけ", "行ごとに入力"], "required-3-ja")
+        _assert_contains_all(
+            en,
+            ["Only three columns are required", "each row still needs"],
+            "required-3-en",
+        )
+
+    def test_import_page_rating_and_date_rules(self):
+        ja = read(PAGES["ja_import"])
+        en = read(PAGES["en_import"])
+        _assert_contains_all(
+            ja, ["1.0〜5.0", "0.1刻み", "1〜5の整数", "YYYY-MM-DD"], "rules-ja"
+        )
+        _assert_contains_all(
+            en,
+            ["1.0 to 5.0", "steps of 0.1", "1 to 5", "YYYY-MM-DD"],
+            "rules-en",
+        )
+
+    def test_import_page_currency_default_and_no_country_inference(self):
+        ja = read(PAGES["ja_import"])
+        en = read(PAGES["en_import"])
+        _assert_contains_all(ja, ["既定通貨", "推測することはありません"], "currency-ja")
+        _assert_contains_all(
+            en, ["default currency", "never used to guess"], "currency-en"
+        )
+
+    def test_import_page_visit_group_explained_with_example(self):
+        ja = read(PAGES["ja_import"])
+        en = read(PAGES["en_import"])
+        _assert_contains_all(
+            ja, ["同じ食事で複数の料理", "空欄", "別の訪問"], "visit-group-ja"
+        )
+        _assert_contains_all(
+            en, ["same meal", "blank", "separate visit"], "visit-group-en"
+        )
+
+    def test_import_page_append_only_disclosure(self):
+        ja = read(PAGES["ja_import"])
+        en = read(PAGES["en_import"])
+        _assert_contains_all(
+            ja, ["追加されます", "更新したり", "置き換えたり"], "append-only-ja"
+        )
+        _assert_contains_all(
+            en,
+            ["added to your existing records", "does not update", "replace"],
+            "append-only-en",
+        )
+
+    def test_import_page_duplicate_default_exclusion(self):
+        ja = read(PAGES["ja_import"])
+        en = read(PAGES["en_import"])
+        _assert_contains_all(ja, ["既定で", "除外", "含める"], "duplicate-ja")
+        _assert_contains_all(en, ["excluded by default", "include"], "duplicate-en")
+
+    def test_import_page_invalid_group_excluded_entirely(self):
+        ja = read(PAGES["ja_import"])
+        en = read(PAGES["en_import"])
+        _assert_contains_all(ja, ["訪問グループ全体", "除外"], "invalid-group-ja")
+        _assert_contains_all(
+            en, ["entire visit group", "excluded"], "invalid-group-en"
+        )
+
+    def test_import_page_local_parsing_and_frankfurter_disclosure(self):
+        ja = read(PAGES["ja_import"])
+        en = read(PAGES["en_import"])
+        _assert_contains_all(
+            ja,
+            ["端末内で解析", "Frankfurter", "送信することはありません"],
+            "privacy-ja",
+        )
+        _assert_contains_all(
+            en,
+            ["parsed entirely on your device", "Frankfurter", "never sent"],
+            "privacy-en",
+        )
+
+    def test_import_page_file_limits(self):
+        ja = read(PAGES["ja_import"])
+        en = read(PAGES["en_import"])
+        _assert_contains_all(ja, ["10MB", "10,000行", "UTF-8"], "limits-ja")
+        _assert_contains_all(en, ["10MB", "10,000", "UTF-8"], "limits-en")
 
 
 if __name__ == "__main__":
