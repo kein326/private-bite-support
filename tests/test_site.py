@@ -82,11 +82,18 @@ def read(path: Path) -> str:
 
 def extract_css_var(css: str, var_name: str) -> str:
     """CSS テキストから `--var-name: #rrggbb;` 形式の16進色値を抽出する。
-    見つからない場合は AssertionError を送出する（テスト内での利用を想定）。"""
-    match = re.search(rf"{re.escape(var_name)}\s*:\s*(#[0-9a-fA-F]{{6}})\s*;", css)
-    if not match:
-        raise AssertionError(f"{var_name} が css 内に見つかりません")
-    return match.group(1)
+    このサイトは --primary・--surface・--background を :root で一度だけ
+    定義する契約のため、定義が0件（見つからない）または2件以上（レスポンシブ
+    な上書きなどで重複定義されている）の場合は、どちらの値かを黙って選ばずに
+    AssertionError を送出する（テスト内での利用を想定）。"""
+    pattern = re.compile(rf"{re.escape(var_name)}\s*:\s*(#[0-9a-fA-F]{{6}})\s*;")
+    matches = pattern.findall(css)
+    if len(matches) != 1:
+        raise AssertionError(
+            f"{var_name} は css 内でちょうど1回定義されている必要がありますが、"
+            f"{len(matches)}件見つかりました"
+        )
+    return matches[0]
 
 
 def relative_luminance(hex_color: str) -> float:
@@ -179,6 +186,14 @@ def _language_link_href(links):
 
 def _footer_link_href(links):
     return _link_in_container(links, "footer")
+
+
+def _extract_mailto_links(links):
+    """抽出済みリンク一覧から mailto: リンクだけを、scheme の大文字小文字を
+    問わずに抽出する。href.startswith("mailto:") のような前方一致だと、
+    大文字の "MAILTO:" が検査対象から漏れてしまうため、
+    urlsplit(href).scheme.lower() == "mailto" で判定する。"""
+    return [link for link in links if urlsplit(link["href"]).scheme.lower() == "mailto"]
 
 
 class _DlPairParser(HTMLParser):
@@ -323,14 +338,15 @@ def is_valid_support_mailto(href: str) -> bool:
     mailto:privatebite.support@icloud.com,other@example.com?subject=x のような
     複数宛先を誤って許可してしまうため、厳密な分解検査に置き換える。
 
-    - scheme が "mailto" である。
+    - scheme が "mailto" である（大文字小文字を問わない。"MAILTO:" のような
+      表記も許可する）。
     - 宛先（urlsplit の path 部分をカンマ区切りで分割したもの）が1件だけであり、
       その1件が SUPPORT_EMAIL と完全一致する。
     - クエリ文字列のキーが "subject" だけであり、"cc"・"bcc"・その他未知のキーを
       含まない。
     """
     parts = urlsplit(href)
-    if parts.scheme != "mailto":
+    if parts.scheme.lower() != "mailto":
         return False
 
     recipients = parts.path.split(",")
@@ -347,7 +363,7 @@ def is_valid_support_mailto(href: str) -> bool:
 
 
 _URL_FUNCTION_PATTERN = re.compile(
-    r"""url\(\s*(['"]?)(?P<value>[^'")]*)\1\s*\)""",
+    r"""url\(\s*(?:"(?P<dq>[^"]*)"|'(?P<sq>[^']*)'|(?P<uq>[^'")]*))\s*\)""",
     re.IGNORECASE,
 )
 _IMPORT_OR_FONT_FACE_PATTERN = re.compile(r"@import|@font-face", re.IGNORECASE)
@@ -359,10 +375,19 @@ def extract_external_css_urls(css: str) -> list:
     http: / https: / // のいずれかで始まる外部参照だけを一覧として返す。
     url( の大文字小文字、引用符の有無（シングル/ダブル/なし）、括弧内側の空白の
     バリエーションを問わずマッチするよう re.IGNORECASE を使った正規表現で解析する
-    （部分一致の "url(http" では検出できない引用符付き・大文字表記に対応するため）。"""
+    （部分一致の "url(http" では検出できない引用符付き・大文字表記に対応するため）。
+    ダブルクォート・シングルクォート・引用符なしを別々の選択肢として扱うことで、
+    値の内部に反対側の引用符（例: url("...o'neil.png")）が含まれていても、
+    開始引用符と同じ引用符が再び現れるまでを正しく値として取得する。"""
     external = []
     for match in _URL_FUNCTION_PATTERN.finditer(css):
-        value = match.group("value").strip()
+        if match.group("dq") is not None:
+            value = match.group("dq")
+        elif match.group("sq") is not None:
+            value = match.group("sq")
+        else:
+            value = match.group("uq")
+        value = value.strip()
         if value.lower().startswith(_EXTERNAL_URL_PREFIXES):
             external.append(value)
     return external
@@ -373,13 +398,27 @@ def css_has_import_or_font_face(css: str) -> bool:
     return _IMPORT_OR_FONT_FACE_PATTERN.search(css) is not None
 
 
+_ANDROID_FAQ_FORBIDDEN_CONTRADICTIONS = {
+    "ja": ["必ず復元", "復元を保証", "保証します", "保証されます"],
+    "en": [
+        "is guaranteed",
+        "restoration is guaranteed",
+        "will always restore",
+        "guaranteed to restore",
+    ],
+}
+
+
 def assert_android_faq_answer_complete(dd_text: str, lang: str) -> None:
     """Android機種変更FAQの回答(dd)本文だけを対象に、現在Androidにインストール・
     利用・バックアップ復元ができないこと、Android版は将来提供予定であること、
     提供時期は未定であること、現在のバックアップと将来のAndroid版との互換性が
     未定であること、将来の復元を保証しないことをすべて満たすか検査する。
     いずれか欠けている、または矛盾した内容（例: 復元を保証すると書かれている）
-    の場合は AssertionError を送出する。"""
+    の場合は AssertionError を送出する。必須語句の存在確認だけでは、正しい
+    回答の末尾に反対の意味の文（「将来のAndroid版では必ず復元できることを
+    保証します」等）が追記されても検出できないため、既知の矛盾表現も
+    別途拒否する。"""
     if lang == "ja":
         required = [
             "現在iPhone版だけ",
@@ -408,6 +447,11 @@ def assert_android_faq_answer_complete(dd_text: str, lang: str) -> None:
     else:
         raise ValueError(f"unsupported lang: {lang!r}")
     _assert_contains_all(dd_text, required, f"android-faq-{lang}")
+    _assert_contains_none(
+        dd_text,
+        _ANDROID_FAQ_FORBIDDEN_CONTRADICTIONS[lang],
+        f"android-faq-contradiction-{lang}",
+    )
 
 
 def assert_iphone_migration_faq_answer_complete(dd_text: str, lang: str) -> None:
@@ -415,10 +459,16 @@ def assert_iphone_migration_faq_answer_complete(dd_text: str, lang: str) -> None
     iCloudバックアップで通常は記録・写真が引き継がれること、データエクスポートは
     必須ではない任意の追加バックアップであることを検査する。"""
     if lang == "ja":
-        required = ["クイックスタート", "iCloudバックアップ", "通常は", "引き継が", "追加のバックアップ"]
+        required = [
+            "クイックスタート", "iCloudバックアップ", "通常は", "引き継が",
+            "追加のバックアップ", "記録", "写真",
+        ]
         forbidden = ["必須", "しなければ"]
     elif lang == "en":
-        required = ["Quick Start", "iCloud backup", "usually", "carried over", "additional backup"]
+        required = [
+            "Quick Start", "iCloud backup", "usually", "carried over",
+            "additional backup", "records", "photos",
+        ]
         forbidden = ["must", "is required"]
     else:
         raise ValueError(f"unsupported lang: {lang!r}")
@@ -561,6 +611,47 @@ class SiteContractTest(unittest.TestCase):
         with self.assertRaises(AssertionError):
             assert_iphone_migration_faq_answer_complete(answer_mig, "ja")
 
+    def test_android_faq_rejects_appended_contradiction(self):
+        """必須語句の存在検査だけでは、正しい回答の末尾に反対の意味の文が
+        追記されても検出できない（既存の合成テストは必須語句を削って矛盾を
+        作っていたため、必須語句をすべて満たしたまま矛盾を追記するケースを
+        見逃していた）。実ファイルの正しい回答の末尾へ矛盾する一文を追記し、
+        AssertionError が送出されることを確認する。"""
+        ja_pairs = extract_dt_dd_pairs(read(PAGES["ja_support"]))
+        ja_answer = _answer_for_question(ja_pairs, "Androidへ機種変更")
+        ja_contradicted = ja_answer + "ただし、将来のAndroid版では必ず復元できることを保証します。"
+        with self.assertRaises(AssertionError):
+            assert_android_faq_answer_complete(ja_contradicted, "ja")
+
+        en_pairs = extract_dt_dd_pairs(read(PAGES["en_support"]))
+        en_answer = _answer_for_question(en_pairs, "switching to Android")
+        en_contradicted = (
+            en_answer + " However, restoration on the future Android version is guaranteed."
+        )
+        with self.assertRaises(AssertionError):
+            assert_android_faq_answer_complete(en_contradicted, "en")
+
+    def test_iphone_migration_faq_requires_records_and_photos_mention(self):
+        """機種変更FAQの回答が「記録と写真」（英語版は records and photos）を
+        具体的に言及していない場合は、他の必須語句をすべて満たしていても
+        失敗すること（合成入力から記録/写真の言及だけを一般的な語へ置換）。"""
+        ja_generic = (
+            "クイックスタートまたはiCloudバックアップから新しいiPhoneへ移行した場合、"
+            "Private Biteのデータも通常は引き継がれます。念のため、移行前に設定画面の"
+            "「データをエクスポート」で追加のバックアップを保存できます。"
+        )
+        with self.assertRaises(AssertionError):
+            assert_iphone_migration_faq_answer_complete(ja_generic, "ja")
+
+        en_generic = (
+            "If you migrate to a new iPhone using Quick Start or an iCloud backup, "
+            "Private Bite's data is usually carried over as well. As an extra "
+            'precaution, you can save an additional backup before migrating by '
+            'using "Export Data" in Settings.'
+        )
+        with self.assertRaises(AssertionError):
+            assert_iphone_migration_faq_answer_complete(en_generic, "en")
+
     def test_privacy_disclosures(self):
         ja = read(PAGES["ja_privacy"])
         en = read(PAGES["en_privacy"])
@@ -593,6 +684,27 @@ class SiteContractTest(unittest.TestCase):
         ratio = contrast_ratio(primary, surface)
 
         self.assertLess(ratio, 4.5)
+
+    def test_extract_css_var_rejects_duplicate_definition(self):
+        """このサイトは --primary・--surface・--background を :root で一度だけ
+        定義する契約であるため、同じ変数名が（レスポンシブな上書き等で）2件
+        以上見つかった場合は、どちらの値かを黙って選ばずに AssertionError を
+        送出すること。1回だけ定義されている変数は引き続き取得できること。"""
+        css = """
+        :root {
+          --primary: #0f766e;
+          --surface: #ffffff;
+          --background: #edf7f4;
+        }
+
+        @media (max-width: 500px) {
+          :root { --primary: #cccccc; }
+        }
+        """
+        with self.assertRaises(AssertionError):
+            extract_css_var(css, "--primary")
+        self.assertEqual(extract_css_var(css, "--surface"), "#ffffff")
+        self.assertEqual(extract_css_var(css, "--background"), "#edf7f4")
 
     def test_frankfurter_connection_info_disclosure(self):
         """Frankfurter API段落にIPアドレスなどの一般的な接続情報処理の開示が含まれること"""
@@ -642,7 +754,7 @@ class SiteContractTest(unittest.TestCase):
         複数宛先を誤って許可しない。"""
         for name, path in PAGES.items():
             links = extract_links(read(path))
-            mailto_links = [link for link in links if link["href"].startswith("mailto:")]
+            mailto_links = _extract_mailto_links(links)
             with self.subTest(name=name):
                 self.assertTrue(mailto_links, "no mailto link found")
                 for link in mailto_links:
@@ -670,6 +782,24 @@ class SiteContractTest(unittest.TestCase):
         self.assertFalse(
             is_valid_support_mailto(f"mailto:{SUPPORT_EMAIL}?bcc=other@example.com")
         )
+
+    def test_mailto_extraction_is_scheme_case_insensitive(self):
+        """mailto リンクの抽出が scheme の大文字小文字を問わないこと。
+        href.startswith("mailto:") のような前方一致の抽出方法だと、大文字の
+        "MAILTO:" が検査対象から漏れてしまうため、
+        urlsplit(href).scheme.lower() == "mailto" で判定する
+        _extract_mailto_links を使うことを、合成HTMLで確認する。"""
+        html = (
+            '<a href="mailto:privatebite.support@icloud.com?subject=x">正常</a>'
+            '<a href="MAILTO:privatebite.support@icloud.com?cc=other%40example.com">不正</a>'
+        )
+        links = extract_links(html)
+        mailto_links = _extract_mailto_links(links)
+        self.assertEqual(
+            len(mailto_links), 2, "mailto: と MAILTO: の両方を検出すること"
+        )
+        validity = [is_valid_support_mailto(link["href"]) for link in mailto_links]
+        self.assertEqual(validity, [True, False])
 
     def test_stylesheet_has_no_forbidden_patterns(self):
         """styles.css に @import・外部URL参照・外部フォント・外部CDN・スクリプトが
@@ -811,6 +941,26 @@ class SiteContractTest(unittest.TestCase):
             self.assertEqual(
                 extract_external_css_urls(css),
                 ["https://cdn.example.com/font.woff2"],
+            )
+
+    def test_extract_external_css_urls_handles_embedded_opposite_quote(self):
+        """引用符で囲んだURL値の内部に反対側の引用符が含まれていても、正しく
+        1件の外部URLとして抽出できること。開始引用符と異なる引用符を除外する
+        文字クラス（例: [^'")]）だと、値の途中に反対側の引用符が現れた時点で
+        マッチが途切れてしまうため、ダブルクォート・シングルクォート・
+        引用符なしを別々の正規表現選択肢として扱う必要がある。"""
+        with self.subTest(value="double-quoted url containing a single quote"):
+            css = "background-image: url(\"https://cdn.example.com/o'neil.png\");"
+            self.assertEqual(
+                extract_external_css_urls(css),
+                ["https://cdn.example.com/o'neil.png"],
+            )
+
+        with self.subTest(value="single-quoted url containing a double quote"):
+            css = "background-image: url('https://cdn.example.com/a\"b.png');"
+            self.assertEqual(
+                extract_external_css_urls(css),
+                ['https://cdn.example.com/a"b.png'],
             )
 
 
