@@ -92,6 +92,12 @@ class SiteContractTest(unittest.TestCase):
         for value in ["OpenStreetMap", "Frankfurter", "MapKit", "Google Maps", "12 months"]:
             self.assertIn(value, en)
 
+    def test_primary_color_meets_wcag_aa_contrast(self):
+        """--primary は白背景・ミント背景の双方で通常文字4.5:1以上を満たす色であること"""
+        css = (ROOT / "styles.css").read_text(encoding="utf-8")
+        self.assertIn("--primary: #0f766e;", css)
+        self.assertNotIn("--primary: #168f84;", css)
+
     def test_frankfurter_connection_info_disclosure(self):
         """Frankfurter API段落にIPアドレスなどの一般的な接続情報処理の開示が含まれること"""
         ja = read(PAGES["ja_privacy"])
