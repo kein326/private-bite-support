@@ -87,6 +87,125 @@ def _footer_link_href(links):
     return _link_in_container(links, "footer")
 
 
+class _DlPairParser(HTMLParser):
+    """<dl>内の<dt>テキストと直後の<dd>テキストをペアとして抽出するヘルパー。
+    ページ全体の単語一致ではなく、質問(dt)と回答(dd)の対応関係を保ったまま
+    回答本文だけを検査できるようにするため、標準ライブラリの HTMLParser だけで
+    構造検査を行う（_LinkExtractingParser と同じ方式）。"""
+
+    def __init__(self):
+        super().__init__()
+        self.pairs = []
+        self._current_tag = None
+        self._current_text = []
+        self._pending_dt = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("dt", "dd"):
+            self._current_tag = tag
+            self._current_text = []
+
+    def handle_endtag(self, tag):
+        if tag == "dt" and self._current_tag == "dt":
+            self._pending_dt = "".join(self._current_text).strip()
+            self._current_tag = None
+        elif tag == "dd" and self._current_tag == "dd":
+            dd_text = "".join(self._current_text).strip()
+            if self._pending_dt is not None:
+                self.pairs.append((self._pending_dt, dd_text))
+                self._pending_dt = None
+            self._current_tag = None
+
+    def handle_data(self, data):
+        if self._current_tag in ("dt", "dd"):
+            self._current_text.append(data)
+
+
+def extract_dt_dd_pairs(html: str) -> list:
+    """html.parser.HTMLParser のみを使い、<dl>内の<dt>テキストと直後の<dd>テキストを
+    (question, answer) のタプルの一覧として抽出する。"""
+    parser = _DlPairParser()
+    parser.feed(html)
+    return parser.pairs
+
+
+def _answer_for_question(pairs, question_substring):
+    """dt/dd ペアの一覧から、dt に question_substring を含む dd テキストを1件返す。
+    ページ全体ではなく対応する回答だけを検査対象にするための橋渡し。"""
+    matches = [dd for dt, dd in pairs if question_substring in dt]
+    if not matches:
+        raise AssertionError(
+            f"no <dt> containing {question_substring!r} found in extracted pairs"
+        )
+    assert len(matches) == 1, (
+        f"expected exactly one <dt> containing {question_substring!r}, found {len(matches)}"
+    )
+    return matches[0]
+
+
+def _assert_contains_all(text, phrases, label):
+    for phrase in phrases:
+        assert phrase in text, f"[{label}] missing required phrase {phrase!r} in: {text!r}"
+
+
+def _assert_contains_none(text, phrases, label):
+    for phrase in phrases:
+        assert phrase not in text, f"[{label}] forbidden phrase {phrase!r} found in: {text!r}"
+
+
+def assert_android_faq_answer_complete(dd_text: str, lang: str) -> None:
+    """Android機種変更FAQの回答(dd)本文だけを対象に、現在Androidにインストール・
+    利用・バックアップ復元ができないこと、Android版は将来提供予定であること、
+    提供時期は未定であること、現在のバックアップと将来のAndroid版との互換性が
+    未定であること、将来の復元を保証しないことをすべて満たすか検査する。
+    いずれか欠けている、または矛盾した内容（例: 復元を保証すると書かれている）
+    の場合は AssertionError を送出する。"""
+    if lang == "ja":
+        required = [
+            "現在iPhone版だけ",
+            "将来提供する予定",
+            "時期は未定",
+            "インストール",
+            "利用",
+            "バックアップ",
+            "復元",
+            "互換性",
+            "未定",
+            "保証されません",
+        ]
+    elif lang == "en":
+        required = [
+            "iPhone",
+            "planned",
+            "no release date",
+            "cannot be installed",
+            "used on Android",
+            "backups cannot be restored",
+            "Compatibility",
+            "undecided",
+            "not guaranteed",
+        ]
+    else:
+        raise ValueError(f"unsupported lang: {lang!r}")
+    _assert_contains_all(dd_text, required, f"android-faq-{lang}")
+
+
+def assert_iphone_migration_faq_answer_complete(dd_text: str, lang: str) -> None:
+    """iPhone間機種変更FAQの回答(dd)本文だけを対象に、クイックスタートまたは
+    iCloudバックアップで通常は記録・写真が引き継がれること、データエクスポートは
+    必須ではない任意の追加バックアップであることを検査する。"""
+    if lang == "ja":
+        required = ["クイックスタート", "iCloudバックアップ", "通常は", "引き継が", "追加のバックアップ"]
+        forbidden = ["必須", "しなければ"]
+    elif lang == "en":
+        required = ["Quick Start", "iCloud backup", "usually", "carried over", "additional backup"]
+        forbidden = ["must", "is required"]
+    else:
+        raise ValueError(f"unsupported lang: {lang!r}")
+    _assert_contains_all(dd_text, required, f"iphone-migration-faq-{lang}")
+    _assert_contains_none(dd_text, forbidden, f"iphone-migration-faq-{lang}")
+
+
 class SiteContractTest(unittest.TestCase):
     def test_all_required_pages_exist(self):
         for name, path in PAGES.items():
@@ -148,11 +267,79 @@ class SiteContractTest(unittest.TestCase):
         for value in [
             "Quick Start",
             "iCloud backup",
-            "iPhone only",
-            "planned for the future",
+            "only for iPhone",
+            "is planned",
             "no release date",
         ]:
             self.assertIn(value, en)
+
+    def test_android_faq_answer_is_complete_for_its_own_dd(self):
+        """『Androidへ機種変更しても使えますか？』の dt に対応する dd 本文だけを
+        検査する（ページ全体の単語一致では、別の質問の dd に語句が含まれているだけ
+        でも成功してしまうため、dt/dd 対応付けを経由する）。"""
+        ja_pairs = extract_dt_dd_pairs(read(PAGES["ja_support"]))
+        ja_answer = _answer_for_question(ja_pairs, "Androidへ機種変更")
+        assert_android_faq_answer_complete(ja_answer, "ja")
+
+        en_pairs = extract_dt_dd_pairs(read(PAGES["en_support"]))
+        en_answer = _answer_for_question(en_pairs, "switching to Android")
+        assert_android_faq_answer_complete(en_answer, "en")
+
+    def test_iphone_migration_faq_answer_is_complete_for_its_own_dd(self):
+        """『機種変更しても記録を引き継げますか？』の dt に対応する dd 本文だけを
+        検査する。クイックスタート/iCloudバックアップでの引き継ぎと、データ
+        エクスポートが必須ではない任意の追加バックアップであることを確認する。"""
+        ja_pairs = extract_dt_dd_pairs(read(PAGES["ja_support"]))
+        ja_answer = _answer_for_question(ja_pairs, "機種変更しても記録を引き継げます")
+        assert_iphone_migration_faq_answer_complete(ja_answer, "ja")
+
+        en_pairs = extract_dt_dd_pairs(read(PAGES["en_support"]))
+        en_answer = _answer_for_question(en_pairs, "transfer to a new iPhone")
+        assert_iphone_migration_faq_answer_complete(en_answer, "en")
+
+    def test_faq_pair_validation_rejects_contradictory_synthetic_answer(self):
+        """dt/dd 対応付けロジックと検査関数が、矛盾した回答（将来のAndroid版での
+        復元を保証すると書かれている、データエクスポートを必須と書いている等）に
+        対して意図通り AssertionError を送出することを、合成HTMLで確認する。
+        実ファイルではなく文字列として組み立てたHTMLスニペットを使う。"""
+        contradictory_android_ja_html = """
+        <dl>
+          <dt>Androidへ機種変更しても使えますか？</dt>
+          <dd>Private Biteは現在iPhone版だけを提供しています。Android版は将来提供する予定ですが、
+          提供時期は未定です。現時点ではAndroidへインストールして利用したりバックアップを復元したり
+          することはできませんが、将来のAndroid版でも今のバックアップは必ず復元できることを保証します。</dd>
+        </dl>
+        """
+        pairs = extract_dt_dd_pairs(contradictory_android_ja_html)
+        answer = _answer_for_question(pairs, "Androidへ機種変更")
+        with self.assertRaises(AssertionError):
+            assert_android_faq_answer_complete(answer, "ja")
+
+        contradictory_android_en_html = """
+        <dl>
+          <dt>Can I use Private Bite after switching to Android?</dt>
+          <dd>Private Bite is currently available for iPhone only. An Android version is planned
+          for the future, but no release date has been set. At this time, Private Bite cannot be
+          installed or used on Android, but future backups are always guaranteed to restore fine.</dd>
+        </dl>
+        """
+        pairs_en = extract_dt_dd_pairs(contradictory_android_en_html)
+        answer_en = _answer_for_question(pairs_en, "switching to Android")
+        with self.assertRaises(AssertionError):
+            assert_android_faq_answer_complete(answer_en, "en")
+
+        contradictory_migration_ja_html = """
+        <dl>
+          <dt>機種変更しても記録を引き継げますか？</dt>
+          <dd>クイックスタートまたはiCloudバックアップから新しいiPhoneへ移行した場合、
+          Private Biteの記録と写真も通常は引き継がれます。移行前に設定画面の
+          「データをエクスポート」で追加のバックアップを必ず保存しなければなりません。</dd>
+        </dl>
+        """
+        pairs_mig = extract_dt_dd_pairs(contradictory_migration_ja_html)
+        answer_mig = _answer_for_question(pairs_mig, "機種変更しても記録を引き継げます")
+        with self.assertRaises(AssertionError):
+            assert_iphone_migration_faq_answer_complete(answer_mig, "ja")
 
     def test_privacy_disclosures(self):
         ja = read(PAGES["ja_privacy"])
