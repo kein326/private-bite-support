@@ -59,6 +59,26 @@ class SiteContractTest(unittest.TestCase):
                 for value in forbidden:
                     self.assertNotIn(value, html)
 
+    def test_device_migration_faq(self):
+        ja = read(PAGES["ja_support"])
+        for value in [
+            "クイックスタート",
+            "iCloudバックアップ",
+            "現在iPhone版だけ",
+            "将来提供する予定",
+            "時期は未定",
+        ]:
+            self.assertIn(value, ja)
+        en = read(PAGES["en_support"])
+        for value in [
+            "Quick Start",
+            "iCloud backup",
+            "iPhone only",
+            "planned for the future",
+            "no release date",
+        ]:
+            self.assertIn(value, en)
+
     def test_privacy_disclosures(self):
         ja = read(PAGES["ja_privacy"])
         en = read(PAGES["en_privacy"])
