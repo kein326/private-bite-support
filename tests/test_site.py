@@ -1,6 +1,7 @@
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+import csv
 import re
 import unittest
 
@@ -13,6 +14,64 @@ PAGES = {
     "en_support": ROOT / "en" / "index.html",
     "en_privacy": ROOT / "en" / "privacy" / "index.html",
 }
+
+CSV_TEMPLATES = {
+    "ja": ROOT / "downloads" / "private-bite-import-v1-ja.csv",
+    "en": ROOT / "downloads" / "private-bite-import-v1-en.csv",
+}
+
+# 正式仕様の17列（英語キー）。CsvImportSchema の列順を固定する。
+EN_HEADERS = [
+    "visit_group", "visit_date", "shop_name", "dish_name",
+    "visit_type", "city", "country_code", "shop_address",
+    "price", "currency_code", "taste_rating", "category",
+    "cost_rating", "atmosphere_rating", "service_rating",
+    "memo", "revisit_flag",
+]
+
+# 日本語版テンプレートのヘッダー表示名（EN_HEADERS と同じ列順）。
+JA_HEADER_LABELS = [
+    "訪問グループ", "訪問日", "店舗名", "料理名",
+    "利用方法", "都市", "国コード", "店舗住所",
+    "価格", "通貨コード", "味評価", "カテゴリ",
+    "コスパ評価", "雰囲気評価", "サービス評価",
+    "メモ", "再訪したい",
+]
+
+# 英語版テンプレートのヘッダー表示名（EN_HEADERS と同じ列順）。
+EN_HEADER_LABELS = [
+    "Visit Group", "Visit Date", "Shop Name", "Dish Name",
+    "Visit Type", "City", "Country Code", "Shop Address",
+    "Price", "Currency Code", "Taste Rating", "Category",
+    "Cost Rating", "Atmosphere Rating", "Service Rating",
+    "Memo", "Want to Revisit",
+]
+
+# 必須列（アプリ側 CsvImportSchema.requiredColumnKeys と同じ3列）のインデックス。
+REQUIRED_COLUMN_INDICES = [
+    EN_HEADERS.index("visit_date"),
+    EN_HEADERS.index("shop_name"),
+    EN_HEADERS.index("dish_name"),
+]
+
+# 現行アプリが対応する20通貨コード
+# （private_bite の CsvImportSchema.supportedCurrencyCodes と同じ集合）。
+SUPPORTED_CURRENCY_CODES = {
+    "JPY", "USD", "EUR", "GBP", "CNY", "KRW", "THB", "TWD", "HKD", "SGD",
+    "AUD", "CAD", "CHF", "MXN", "INR", "IDR", "PHP", "VND", "MYR", "BRL",
+}
+
+DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def read_csv_bytes(path: Path) -> bytes:
+    return path.read_bytes()
+
+
+def parse_csv_bom(path: Path) -> list:
+    """UTF-8 BOM付きCSVファイルを標準csvモジュールで解析し、行のリストを返す。"""
+    text = path.read_bytes().decode("utf-8-sig")
+    return list(csv.reader(text.splitlines()))
 
 
 def read(path: Path) -> str:
@@ -588,6 +647,132 @@ class SiteContractTest(unittest.TestCase):
                 extract_external_css_urls(css),
                 ["https://cdn.example.com/font.woff2"],
             )
+
+
+class CsvTemplateContractTest(unittest.TestCase):
+    """CSVから記録を追加する機能向けの公式CSVテンプレート（日英）の契約テスト。
+
+    アプリ側 CsvImportTemplate.build() が実際に生成したバイト列をそのまま
+    downloads/ 配下へコピーしたものであることを検査する。ここでは Flutter を
+    実行できないため、既知のSHA256ハッシュへピン留めすることで、アプリ生成物
+    とのbytes完全一致を固定する（ハッシュはアプリ側worktree
+    csv-record-import のコミット ed9bdf4 で CsvImportTemplate.build() を
+    実行して得た値）。
+    """
+
+    KNOWN_SHA256 = {
+        "ja": "771f4b5d6f6a6f17a269d85af21119c3417fa28f8e7e29bdf2a9eb7b0d868995",
+        "en": "9de2d8beeed8df6ce7b96a3f589554d98ab87ac49ecd9fcc0928fea78158b24e",
+    }
+
+    def test_csv_template_files_exist_with_utf8_bom(self):
+        for lang, path in CSV_TEMPLATES.items():
+            with self.subTest(lang=lang):
+                self.assertTrue(path.is_file(), path)
+                raw = read_csv_bytes(path)
+                self.assertEqual(raw[:3], b"\xef\xbb\xbf", "UTF-8 BOM が先頭にないこと")
+
+    def test_csv_template_bytes_match_app_generated_output(self):
+        """公開ファイルのbytesが、アプリ側 CsvImportTemplate.build() の出力
+        （ブリーフに記載の既知SHA256）と完全一致すること。生成物そのものは
+        アプリrepoへコミットしない。"""
+        import hashlib
+
+        for lang, path in CSV_TEMPLATES.items():
+            with self.subTest(lang=lang):
+                raw = read_csv_bytes(path)
+                digest = hashlib.sha256(raw).hexdigest()
+                self.assertEqual(digest, self.KNOWN_SHA256[lang])
+
+    def test_csv_template_uses_crlf_and_no_trailing_newline(self):
+        for lang, path in CSV_TEMPLATES.items():
+            with self.subTest(lang=lang):
+                raw = read_csv_bytes(path)
+                self.assertIn(b"\r\n", raw)
+                self.assertFalse(raw.endswith(b"\n"))
+
+    def test_csv_template_header_is_fixed_17_column_order(self):
+        expected = {"ja": JA_HEADER_LABELS, "en": EN_HEADER_LABELS}
+        for lang, path in CSV_TEMPLATES.items():
+            with self.subTest(lang=lang):
+                rows = parse_csv_bom(path)
+                header = rows[0]
+                self.assertEqual(len(header), 17)
+                self.assertEqual(header, expected[lang])
+
+    def test_csv_template_headers_do_not_mix_languages(self):
+        """日本語版ヘッダーに英語版のラベルが、英語版ヘッダーに日本語版の
+        ラベルが混在していないこと。"""
+        rows_ja = parse_csv_bom(CSV_TEMPLATES["ja"])
+        rows_en = parse_csv_bom(CSV_TEMPLATES["en"])
+        header_ja = rows_ja[0]
+        header_en = rows_en[0]
+
+        for label in EN_HEADER_LABELS:
+            self.assertNotIn(label, header_ja)
+        for label in JA_HEADER_LABELS:
+            self.assertNotIn(label, header_en)
+
+    def test_csv_template_sample_row_has_17_cells_and_required_values(self):
+        for lang, path in CSV_TEMPLATES.items():
+            with self.subTest(lang=lang):
+                rows = parse_csv_bom(path)
+                self.assertEqual(len(rows), 2, "ヘッダー1行+サンプル1行の計2行")
+                sample = rows[1]
+                self.assertEqual(len(sample), 17)
+                for index in REQUIRED_COLUMN_INDICES:
+                    self.assertTrue(
+                        sample[index].strip(),
+                        f"required column at index {index} must not be empty",
+                    )
+
+    def test_csv_template_sample_row_field_formats_are_valid(self):
+        for lang, path in CSV_TEMPLATES.items():
+            with self.subTest(lang=lang):
+                rows = parse_csv_bom(path)
+                sample = rows[1]
+                visit_date = sample[EN_HEADERS.index("visit_date")]
+                country_code = sample[EN_HEADERS.index("country_code")]
+                currency_code = sample[EN_HEADERS.index("currency_code")]
+
+                self.assertRegex(visit_date, DATE_PATTERN)
+                self.assertEqual(len(country_code), 2)
+                self.assertTrue(country_code.isalpha())
+                self.assertEqual(country_code, country_code.upper())
+                self.assertIn(currency_code, SUPPORTED_CURRENCY_CODES)
+
+    def test_csv_template_sample_memo_with_comma_is_quoted_correctly(self):
+        """メモ欄にカンマを含むサンプル行が、17セルのまま正しく1フィールドとして
+        解析されること（引用符での保護が効いていることの確認）。"""
+        for lang, path in CSV_TEMPLATES.items():
+            with self.subTest(lang=lang):
+                rows = parse_csv_bom(path)
+                sample = rows[1]
+                memo = sample[EN_HEADERS.index("memo")]
+                self.assertIn(",", memo)
+                self.assertEqual(len(sample), 17)
+
+    def test_csv_template_ja_en_samples_represent_the_same_visit(self):
+        """日英サンプル行が同じ意味のデータ（訪問グループ、日付、国、価格、
+        通貨、各評価、再訪希望）を表していること。"""
+        rows_ja = parse_csv_bom(CSV_TEMPLATES["ja"])
+        rows_en = parse_csv_bom(CSV_TEMPLATES["en"])
+        sample_ja = rows_ja[1]
+        sample_en = rows_en[1]
+
+        same_value_keys = [
+            "visit_group", "visit_date", "country_code", "price",
+            "currency_code", "taste_rating", "cost_rating",
+            "atmosphere_rating", "service_rating",
+        ]
+        for key in same_value_keys:
+            index = EN_HEADERS.index(key)
+            with self.subTest(key=key):
+                self.assertEqual(sample_ja[index], sample_en[index])
+
+        revisit_index = EN_HEADERS.index("revisit_flag")
+        self.assertEqual(sample_ja[revisit_index], "はい")
+        self.assertEqual(sample_en[revisit_index], "TRUE")
 
 
 if __name__ == "__main__":
