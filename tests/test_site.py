@@ -87,6 +87,17 @@ class SiteContractTest(unittest.TestCase):
         for value in ["OpenStreetMap", "Frankfurter", "MapKit", "Google Maps", "12 months"]:
             self.assertIn(value, en)
 
+    def test_frankfurter_connection_info_disclosure(self):
+        """Frankfurter API段落にIPアドレスなどの一般的な接続情報処理の開示が含まれること"""
+        ja = read(PAGES["ja_privacy"])
+        en = read(PAGES["en_privacy"])
+        # 日本語: IPアドレスと一般的な接続情報の記述が必須
+        self.assertIn("IPアドレス", ja)
+        self.assertIn("一般的な接続情報", ja)
+        # 英語: IP address と general connection information の記述が必須
+        self.assertIn("IP address", en)
+        self.assertIn("general connection information", en)
+
 
 if __name__ == "__main__":
     unittest.main()
