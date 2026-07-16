@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import unittest
 
 
@@ -26,11 +27,15 @@ class SiteContractTest(unittest.TestCase):
         self.assertTrue((ROOT / "styles.css").is_file())
 
     def test_support_email_is_consistent(self):
+        email_pattern = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
         for name, path in PAGES.items():
             with self.subTest(name=name):
                 html = read(path)
                 self.assertIn(SUPPORT_EMAIL, html)
-                self.assertNotIn("kei@synet.co.jp", html)
+                found = email_pattern.findall(html)
+                self.assertTrue(found, "no email address found in page")
+                for address in found:
+                    self.assertEqual(address, SUPPORT_EMAIL)
 
     def test_languages_and_titles(self):
         self.assertIn('lang="ja"', read(PAGES["ja_support"]))
