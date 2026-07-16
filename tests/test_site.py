@@ -19,6 +19,38 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def extract_css_var(css: str, var_name: str) -> str:
+    """CSS テキストから `--var-name: #rrggbb;` 形式の16進色値を抽出する。
+    見つからない場合は AssertionError を送出する（テスト内での利用を想定）。"""
+    match = re.search(rf"{re.escape(var_name)}\s*:\s*(#[0-9a-fA-F]{{6}})\s*;", css)
+    if not match:
+        raise AssertionError(f"{var_name} が css 内に見つかりません")
+    return match.group(1)
+
+
+def relative_luminance(hex_color: str) -> float:
+    """WCAG の sRGB 相対輝度式で16進色（#rrggbb）から相対輝度 L を計算する。"""
+    hex_color = hex_color.lstrip("#")
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+
+    def channel_linear(c_255: int) -> float:
+        c_prime = c_255 / 255
+        if c_prime <= 0.03928:
+            return c_prime / 12.92
+        return ((c_prime + 0.055) / 1.055) ** 2.4
+
+    r_lin, g_lin, b_lin = channel_linear(r), channel_linear(g), channel_linear(b)
+    return 0.2126 * r_lin + 0.7152 * g_lin + 0.0722 * b_lin
+
+
+def contrast_ratio(hex_color_a: str, hex_color_b: str) -> float:
+    """WCAG のコントラスト比式で2つの16進色間のコントラスト比を計算する。"""
+    l_a = relative_luminance(hex_color_a)
+    l_b = relative_luminance(hex_color_b)
+    lighter, darker = max(l_a, l_b), min(l_a, l_b)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
 class _LinkExtractingParser(HTMLParser):
     """<a href="..."> 要素をパースし、href・可視テキスト・直近の nav/footer/section/header
     祖先要素（class 付きならタグ名.class）を記録するヘルパー。BeautifulSoup 等の外部
@@ -407,10 +439,29 @@ class SiteContractTest(unittest.TestCase):
             self.assertIn(value, en)
 
     def test_primary_color_meets_wcag_aa_contrast(self):
-        """--primary は白背景・ミント背景の双方で通常文字4.5:1以上を満たす色であること"""
+        """--primary は --surface（白背景）・--background（ミント背景）の双方で
+        通常文字4.5:1以上のWCAGコントラスト比を実値計算で満たすこと"""
         css = (ROOT / "styles.css").read_text(encoding="utf-8")
-        self.assertIn("--primary: #0f766e;", css)
-        self.assertNotIn("--primary: #168f84;", css)
+        primary = extract_css_var(css, "--primary")
+        surface = extract_css_var(css, "--surface")
+        background = extract_css_var(css, "--background")
+
+        ratio_vs_surface = contrast_ratio(primary, surface)
+        ratio_vs_background = contrast_ratio(primary, background)
+
+        self.assertGreaterEqual(ratio_vs_surface, 4.5)
+        self.assertGreaterEqual(ratio_vs_background, 4.5)
+
+    def test_contrast_ratio_below_threshold_is_detected(self):
+        """薄い色同士の組み合わせは4.5:1を下回ると判定されること（否定テスト）。
+        --primary: #cccccc; と --surface: #ffffff; を想定した合成CSSで検証する。"""
+        low_contrast_css = "--primary: #cccccc;\n--surface: #ffffff;\n"
+        primary = extract_css_var(low_contrast_css, "--primary")
+        surface = extract_css_var(low_contrast_css, "--surface")
+
+        ratio = contrast_ratio(primary, surface)
+
+        self.assertLess(ratio, 4.5)
 
     def test_frankfurter_connection_info_disclosure(self):
         """Frankfurter API段落にIPアドレスなどの一般的な接続情報処理の開示が含まれること"""
