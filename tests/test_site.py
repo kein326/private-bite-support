@@ -183,6 +183,33 @@ def is_valid_support_mailto(href: str) -> bool:
     return True
 
 
+_URL_FUNCTION_PATTERN = re.compile(
+    r"""url\(\s*(['"]?)(?P<value>[^'")]*)\1\s*\)""",
+    re.IGNORECASE,
+)
+_IMPORT_OR_FONT_FACE_PATTERN = re.compile(r"@import|@font-face", re.IGNORECASE)
+_EXTERNAL_URL_PREFIXES = ("http:", "https:", "//")
+
+
+def extract_external_css_urls(css: str) -> list:
+    """CSS全文から url(...) の中身（引用符・前後の空白を除いた値）をすべて抽出し、
+    http: / https: / // のいずれかで始まる外部参照だけを一覧として返す。
+    url( の大文字小文字、引用符の有無（シングル/ダブル/なし）、括弧内側の空白の
+    バリエーションを問わずマッチするよう re.IGNORECASE を使った正規表現で解析する
+    （部分一致の "url(http" では検出できない引用符付き・大文字表記に対応するため）。"""
+    external = []
+    for match in _URL_FUNCTION_PATTERN.finditer(css):
+        value = match.group("value").strip()
+        if value.lower().startswith(_EXTERNAL_URL_PREFIXES):
+            external.append(value)
+    return external
+
+
+def css_has_import_or_font_face(css: str) -> bool:
+    """CSS全文に @import または @font-face が含まれるか、大文字小文字を問わず判定する。"""
+    return _IMPORT_OR_FONT_FACE_PATTERN.search(css) is not None
+
+
 def assert_android_faq_answer_complete(dd_text: str, lang: str) -> None:
     """Android機種変更FAQの回答(dd)本文だけを対象に、現在Androidにインストール・
     利用・バックアップ復元ができないこと、Android版は将来提供予定であること、
@@ -462,11 +489,15 @@ class SiteContractTest(unittest.TestCase):
 
     def test_stylesheet_has_no_forbidden_patterns(self):
         """styles.css に @import・外部URL参照・外部フォント・外部CDN・スクリプトが
-        含まれないこと（本文HTMLだけでなくCSS自体を対象にした検査）"""
-        css = (ROOT / "styles.css").read_text(encoding="utf-8").lower()
+        含まれないこと（本文HTMLだけでなくCSS自体を対象にした検査）。
+        url(...) は引用符・空白・大文字小文字を正規化した厳密な正規表現解析で、
+        @import・@font-face は大文字小文字を問わない検査で判定する。"""
+        css_raw = (ROOT / "styles.css").read_text(encoding="utf-8")
+        self.assertEqual(extract_external_css_urls(css_raw), [])
+        self.assertFalse(css_has_import_or_font_face(css_raw))
+
+        css = css_raw.lower()
         forbidden = [
-            "@import",
-            "url(http",
             "googleapis",
             "jsdelivr",
             "<script",
@@ -474,6 +505,38 @@ class SiteContractTest(unittest.TestCase):
         for value in forbidden:
             with self.subTest(value=value):
                 self.assertNotIn(value, css)
+
+    def test_extract_external_css_urls_detects_quoted_and_spaced_forms(self):
+        """url(...) の引用符付き・大文字・前後空白のバリエーションを、部分一致
+        (url(http) では検出できないケースも含めて正規表現解析で検出できること"""
+        with self.subTest(value="quoted https url"):
+            css = 'background-image: url("https://cdn.example.com/image.png");'
+            self.assertEqual(
+                extract_external_css_urls(css),
+                ["https://cdn.example.com/image.png"],
+            )
+
+        with self.subTest(value="uppercase URL with spaces and single quotes"):
+            css = "background-image: URL( '//cdn.example.com/image.png' );"
+            self.assertEqual(
+                extract_external_css_urls(css),
+                ["//cdn.example.com/image.png"],
+            )
+
+        with self.subTest(value="@import"):
+            css = '@import "https://cdn.example.com/site.css";'
+            self.assertTrue(css_has_import_or_font_face(css))
+
+        with self.subTest(value="@font-face with url"):
+            css = (
+                "@font-face { font-family: Example; "
+                "src: url(https://cdn.example.com/font.woff2); }"
+            )
+            self.assertTrue(css_has_import_or_font_face(css))
+            self.assertEqual(
+                extract_external_css_urls(css),
+                ["https://cdn.example.com/font.woff2"],
+            )
 
 
 if __name__ == "__main__":
